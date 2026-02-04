@@ -2,12 +2,35 @@ const { useState, useEffect, useRef } = React;
 
 // Card types and their configurations
 const CARD_CONFIG = {
-    matching: { count: 3, color: '#3b82f6', label: 'Matching', icon: '🔵' },
-    measuring: { count: 3, color: '#10b981', label: 'Measuring', icon: '🟢' },
+    matching: { count: 6, color: '#3b82f6', label: 'Matching', icon: '📐' },
     radar: { count: 2, color: '#f59e0b', label: 'Radar', icon: '🟠' },
-    thermometer: { count: 2, color: '#eab308', label: 'Thermometer', icon: '🟡' },
-    photo: { count: 1, color: '#06b6d4', label: 'Photo', icon: '🔷' }
+    thermometer: { count: 2, color: '#eab308', label: 'Thermometer', icon: '🌡️' },
+    photo: { count: 9, color: '#06b6d4', label: 'Photo', icon: '📷' }
 };
+
+// Predefined questions
+const MATCHING_QUESTIONS = [
+    'Are you north or south of us?',
+    'Are you east or west of us?',
+    'Are you in the same neighborhood / district as us?',
+    'Are you in the same ZIP code / ward as us?',
+    'Are you on the same street as us?',
+    'Are you at the same pub as us?'
+];
+
+const THERMOMETER_DISTANCES = ['100m', '200m', '500m'];
+
+const PHOTO_QUESTIONS = [
+    'The nearest street sign',
+    'The nearest intersection',
+    'The nearest transit stop',
+    'The tallest building you can see',
+    'A visible landmark',
+    'Five distinct buildings',
+    'The street surface',
+    'A photo taken straight up',
+    'A photo taken straight down'
+];
 
 const RADAR_DISTANCES = ['5 mi', '3 mi', '1 mi', '½ mi', '¼ mi', 'Custom'];
 const NOTTINGHAM_CENTER = [52.9548, -1.1581];
@@ -31,11 +54,10 @@ function distanceToMeters(distStr) {
 function App() {
     const [gameStarted, setGameStarted] = useState(false);
     const [seekerCards, setSeekerCards] = useState({
-        matching: 3,
-        measuring: 3,
+        matching: 6,
         radar: 2,
         thermometer: 2,
-        photo: 1
+        photo: 9
     });
     const [usedQuestions, setUsedQuestions] = useState([]);
     const [myLocation, setMyLocation] = useState(null);
@@ -46,6 +68,7 @@ function App() {
     const [selectedMapPoint, setSelectedMapPoint] = useState(null);
     const [pendingQuestion, setPendingQuestion] = useState(null);
     const [activeQuestionType, setActiveQuestionType] = useState(null);
+    const [thermometerStartPoint, setThermometerStartPoint] = useState(null);
     
     const mapRef = useRef(null);
     const mapInstanceRef = useRef(null);
@@ -64,15 +87,23 @@ function App() {
                 maxZoom: 19
             }).addTo(map);
             mapInstanceRef.current = map;
-            
-            // Add click handler for placing questions
-            map.on('click', (e) => {
-                if (activeQuestionType) {
-                    handleMapClick(e.latlng);
-                }
+        }
+    }, [gameStarted]);
+
+    // Add map click handler when activeQuestionType changes
+    useEffect(() => {
+        if (!mapInstanceRef.current) return;
+        
+        // Remove old click handler
+        mapInstanceRef.current.off('click');
+        
+        // Add new click handler if question type is active
+        if (activeQuestionType) {
+            mapInstanceRef.current.on('click', (e) => {
+                handleMapClick(e.latlng);
             });
         }
-    }, [gameStarted, activeQuestionType]);
+    }, [activeQuestionType]);
 
     // GPS tracking (still track for reference)
     useEffect(() => {
@@ -120,24 +151,56 @@ function App() {
     }
 
     function handleMapClick(latlng) {
-        setSelectedMapPoint({ lat: latlng.lat, lng: latlng.lng });
+        if (!activeQuestionType) return;
         
-        // Remove temporary marker if exists
-        if (tempMarkerRef.current) {
-            tempMarkerRef.current.remove();
+        // For Thermometer: need two points (start and end)
+        if (activeQuestionType === 'thermometer') {
+            if (!thermometerStartPoint) {
+                // First click: set start point
+                setThermometerStartPoint({ lat: latlng.lat, lng: latlng.lng });
+                
+                // Add start marker
+                if (tempMarkerRef.current) {
+                    tempMarkerRef.current.remove();
+                }
+                const icon = L.divIcon({
+                    className: 'custom-marker',
+                    html: `<div style="background: #eab308; width: 35px; height: 35px; border-radius: 50%; border: 4px solid white; box-shadow: 0 4px 8px rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; color: white;">START</div>`,
+                    iconSize: [35, 35]
+                });
+                tempMarkerRef.current = L.marker([latlng.lat, latlng.lng], { icon }).addTo(mapInstanceRef.current);
+                
+                alert('📍 Start point set! Now click where you moved TO.');
+                return;
+            } else {
+                // Second click: set end point
+                setSelectedMapPoint({ lat: latlng.lat, lng: latlng.lng });
+                
+                // Show modal
+                setShowModal(true);
+                setModalContent({ type: activeQuestionType, action: 'ask' });
+            }
+        } else {
+            // For other question types: single click
+            setSelectedMapPoint({ lat: latlng.lat, lng: latlng.lng });
+            
+            // Remove temporary marker if exists
+            if (tempMarkerRef.current) {
+                tempMarkerRef.current.remove();
+            }
+            
+            // Add temporary marker
+            const icon = L.divIcon({
+                className: 'custom-marker pulse-marker',
+                html: `<div style="background: ${CARD_CONFIG[activeQuestionType].color}; width: 35px; height: 35px; border-radius: 50%; border: 4px solid white; box-shadow: 0 4px 8px rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; font-size: 20px;">${CARD_CONFIG[activeQuestionType].icon}</div>`,
+                iconSize: [35, 35]
+            });
+            tempMarkerRef.current = L.marker([latlng.lat, latlng.lng], { icon }).addTo(mapInstanceRef.current);
+            
+            // Show modal to confirm question details
+            setShowModal(true);
+            setModalContent({ type: activeQuestionType, action: 'ask' });
         }
-        
-        // Add temporary marker
-        const icon = L.divIcon({
-            className: 'custom-marker',
-            html: `<div style="background: ${CARD_CONFIG[activeQuestionType].color}; width: 35px; height: 35px; border-radius: 50%; border: 4px solid white; box-shadow: 0 4px 8px rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; font-size: 20px; animation: pulse 1s infinite;">${CARD_CONFIG[activeQuestionType].icon}</div>`,
-            iconSize: [35, 35]
-        });
-        tempMarkerRef.current = L.marker([latlng.lat, latlng.lng], { icon }).addTo(mapInstanceRef.current);
-        
-        // Show modal to confirm question details
-        setShowModal(true);
-        setModalContent({ type: activeQuestionType, action: 'ask' });
     }
 
     function useQuestion(type) {
@@ -146,6 +209,7 @@ function App() {
         // Cancel if already selecting
         if (activeQuestionType === type) {
             setActiveQuestionType(null);
+            setThermometerStartPoint(null);
             if (tempMarkerRef.current) {
                 tempMarkerRef.current.remove();
                 tempMarkerRef.current = null;
@@ -155,7 +219,13 @@ function App() {
         
         setActiveQuestionType(type);
         setSelectedMapPoint(null);
-        alert(`📍 Tap on the map where you want to ask this ${CARD_CONFIG[type].label} question!`);
+        setThermometerStartPoint(null);
+        
+        if (type === 'thermometer') {
+            alert(`🌡️ Thermometer:\n1. Click your STARTING point\n2. Click where you MOVED to\n3. Ask: "Am I closer or farther?"`);
+        } else {
+            alert(`📍 Tap on the map where you want to ask this ${CARD_CONFIG[type].label} question!`);
+        }
     }
 
     function confirmQuestion(type, details) {
@@ -169,6 +239,7 @@ function App() {
             type: type,
             details: details,
             location: { ...selectedMapPoint },
+            startLocation: thermometerStartPoint ? { ...thermometerStartPoint } : null,
             timestamp: Date.now(),
             timeUsed: new Date().toLocaleTimeString(),
             answered: false,
@@ -204,6 +275,7 @@ function App() {
         setShowModal(false);
         setActiveQuestionType(null);
         setPendingQuestion(null);
+        setThermometerStartPoint(null);
     }
 
     function addQuestionMarker(question) {
@@ -224,6 +296,29 @@ function App() {
         
         marker.bindPopup(popupText);
         questionMarkersRef.current.push(marker);
+        
+        // For Thermometer, also add start marker
+        if (question.type === 'thermometer' && question.startLocation) {
+            const startIcon = L.divIcon({
+                className: 'custom-marker',
+                html: `<div style="background: #fbbf24; width: 25px; height: 25px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; color: white;">S</div>`,
+                iconSize: [25, 25]
+            });
+            const startMarker = L.marker([question.startLocation.lat, question.startLocation.lng], { icon: startIcon }).addTo(mapInstanceRef.current);
+            startMarker.bindPopup('Thermometer Start Point');
+            questionMarkersRef.current.push(startMarker);
+            
+            // Draw line between start and end
+            const line = L.polyline([
+                [question.startLocation.lat, question.startLocation.lng],
+                [question.location.lat, question.location.lng]
+            ], {
+                color: '#eab308',
+                weight: 3,
+                dashArray: '10, 10'
+            }).addTo(mapInstanceRef.current);
+            shadedAreasRef.current.push(line);
+        }
     }
 
     function addShadedArea(question) {
@@ -249,7 +344,6 @@ function App() {
                 shadedAreasRef.current.push(circle);
             } else if (answer === 'Yes') {
                 // Hider IS within this radius - shade everything OUTSIDE
-                // Create a large outer circle and cut out the inner circle
                 const outerRadius = 50000; // 50km
                 const innerRadius = distance;
                 
@@ -296,17 +390,16 @@ function App() {
             }
         }
         
-        // Handle Thermometer questions
+        // Handle Thermometer questions - just mark the endpoints
         if (type === 'thermometer') {
-            // Just mark the point for reference
             const circle = L.circle([location.lat, location.lng], {
                 radius: 50,
-                color: answer === 'Warmer' ? '#ef4444' : '#3b82f6',
-                fillColor: answer === 'Warmer' ? '#ef4444' : '#3b82f6',
+                color: answer === 'Closer' ? '#ef4444' : '#3b82f6',
+                fillColor: answer === 'Closer' ? '#ef4444' : '#3b82f6',
                 fillOpacity: 0.3,
                 weight: 2
             }).addTo(mapInstanceRef.current);
-            circle.bindPopup(`🌡️ ${answer} from previous position`);
+            circle.bindPopup(`🌡️ ${answer} from start point`);
             shadedAreasRef.current.push(circle);
         }
     }
@@ -315,15 +408,15 @@ function App() {
         if (confirm('Reset the game? This will clear all progress.')) {
             setGameStarted(false);
             setSeekerCards({
-                matching: 3,
-                measuring: 3,
+                matching: 6,
                 radar: 2,
                 thermometer: 2,
-                photo: 1
+                photo: 9
             });
             setUsedQuestions([]);
             setActiveQuestionType(null);
             setSelectedMapPoint(null);
+            setThermometerStartPoint(null);
             
             // Clear map markers and shaded areas
             questionMarkersRef.current.forEach(marker => marker.remove());
@@ -373,12 +466,12 @@ function App() {
                     <div className="status status-info">
                         <strong>How it works:</strong>
                         <ul style={{marginLeft: '20px', marginTop: '10px', fontSize: '13px', lineHeight: '1.6'}}>
-                            <li>Select a question type (Radar, Matching, etc.)</li>
+                            <li>Select a question type</li>
                             <li>Click on the map where you want to ask from</li>
-                            <li>Ask your friend the question via WhatsApp/Snap</li>
-                            <li>Enter their answer (Yes/No, Warmer/Colder, etc.)</li>
+                            <li>Choose from predefined questions</li>
+                            <li>Ask your friend via WhatsApp/Snap</li>
+                            <li>Enter their answer</li>
                             <li>Map automatically shades ruled-out areas!</li>
-                            <li>Use elimination to find the hider</li>
                         </ul>
                     </div>
 
@@ -401,7 +494,7 @@ function App() {
                 <h1>🔍 Seeker</h1>
                 <p>
                     {activeQuestionType 
-                        ? `📍 Tap map to place ${CARD_CONFIG[activeQuestionType].label} question` 
+                        ? `📍 ${thermometerStartPoint ? 'Click END point' : 'Click map to place question'}` 
                         : 'Select a question type below'}
                 </p>
             </div>
@@ -444,11 +537,20 @@ function App() {
 
                 {activeQuestionType && (
                     <div className="status status-warning" style={{marginTop: '10px'}}>
-                        📍 Click anywhere on the map to place your {CARD_CONFIG[activeQuestionType].label} question!
+                        {activeQuestionType === 'thermometer' && !thermometerStartPoint && (
+                            <>📍 Click your STARTING point on the map</>
+                        )}
+                        {activeQuestionType === 'thermometer' && thermometerStartPoint && (
+                            <>📍 Now click where you MOVED to</>
+                        )}
+                        {activeQuestionType !== 'thermometer' && (
+                            <>📍 Click anywhere on the map to place your {CARD_CONFIG[activeQuestionType].label} question!</>
+                        )}
                         <br/>
                         <button 
                             onClick={() => {
                                 setActiveQuestionType(null);
+                                setThermometerStartPoint(null);
                                 if (tempMarkerRef.current) {
                                     tempMarkerRef.current.remove();
                                     tempMarkerRef.current = null;
@@ -533,6 +635,7 @@ function App() {
                             tempMarkerRef.current = null;
                         }
                         setSelectedMapPoint(null);
+                        setThermometerStartPoint(null);
                     }}
                     onConfirm={confirmQuestion}
                 />
@@ -547,6 +650,7 @@ function App() {
                         setShowModal(false);
                         setPendingQuestion(null);
                         setActiveQuestionType(null);
+                        setThermometerStartPoint(null);
                     }}
                 />
             )}
@@ -556,32 +660,29 @@ function App() {
 
 // Question Modal Component
 function QuestionModal({ type, onClose, onConfirm }) {
-    const [input, setInput] = useState('');
+    const [selectedQuestion, setSelectedQuestion] = useState('');
     const [distance, setDistance] = useState('1 mi');
+    const [thermometerDistance, setThermometerDistance] = useState('100m');
 
     function handleConfirm() {
         let details = '';
         
-        if (type === 'matching' || type === 'measuring') {
-            if (!input.trim()) {
-                alert('Please specify a landmark!');
+        if (type === 'matching') {
+            if (!selectedQuestion) {
+                alert('Please select a matching question!');
                 return;
             }
-            details = input;
+            details = selectedQuestion;
         } else if (type === 'radar') {
-            details = distance === 'Custom' ? input : distance;
-            if (distance === 'Custom' && !input.trim()) {
-                alert('Please enter a custom distance!');
-                return;
-            }
+            details = distance;
         } else if (type === 'thermometer') {
-            details = 'Warmer/Colder check';
+            details = `Moved ${thermometerDistance}`;
         } else if (type === 'photo') {
-            if (!input.trim()) {
-                alert('Please specify what to photograph!');
+            if (!selectedQuestion) {
+                alert('Please select a photo subject!');
                 return;
             }
-            details = input;
+            details = selectedQuestion;
         }
         
         onConfirm(type, details);
@@ -597,32 +698,29 @@ function QuestionModal({ type, onClose, onConfirm }) {
                 {type === 'matching' && (
                     <div>
                         <p style={{marginBottom: '15px', color: '#6b7280', fontSize: '14px'}}>
-                            Ask: "Is your nearest [X] the same as mine?"
+                            Select a matching question:
                         </p>
-                        <input
-                            type="text"
-                            className="text-input"
-                            placeholder="e.g., Pub, Tram stop, Park..."
-                            value={input}
-                            onChange={(e) => setInput(e.target.value)}
-                            autoFocus
-                        />
-                    </div>
-                )}
-
-                {type === 'measuring' && (
-                    <div>
-                        <p style={{marginBottom: '15px', color: '#6b7280', fontSize: '14px'}}>
-                            Ask: "Are you closer to [X] than me?"
-                        </p>
-                        <input
-                            type="text"
-                            className="text-input"
-                            placeholder="e.g., Nottingham Castle, City Centre..."
-                            value={input}
-                            onChange={(e) => setInput(e.target.value)}
-                            autoFocus
-                        />
+                        <div style={{display: 'grid', gap: '8px'}}>
+                            {MATCHING_QUESTIONS.map(q => (
+                                <button
+                                    key={q}
+                                    onClick={() => setSelectedQuestion(q)}
+                                    style={{
+                                        padding: '12px',
+                                        background: selectedQuestion === q ? '#3b82f6' : '#f3f4f6',
+                                        color: selectedQuestion === q ? 'white' : '#374151',
+                                        border: selectedQuestion === q ? '2px solid #2563eb' : '2px solid #e5e7eb',
+                                        borderRadius: '8px',
+                                        cursor: 'pointer',
+                                        textAlign: 'left',
+                                        fontSize: '14px',
+                                        fontWeight: selectedQuestion === q ? 'bold' : 'normal'
+                                    }}
+                                >
+                                    {q}
+                                </button>
+                            ))}
+                        </div>
                     </div>
                 )}
 
@@ -640,24 +738,26 @@ function QuestionModal({ type, onClose, onConfirm }) {
                                 <option key={d} value={d}>{d}</option>
                             ))}
                         </select>
-                        {distance === 'Custom' && (
-                            <input
-                                type="text"
-                                className="text-input"
-                                placeholder="e.g., 2 mi, 500m..."
-                                value={input}
-                                onChange={(e) => setInput(e.target.value)}
-                                autoFocus
-                            />
-                        )}
                     </div>
                 )}
 
                 {type === 'thermometer' && (
                     <div>
                         <p style={{marginBottom: '15px', color: '#6b7280', fontSize: '14px'}}>
-                            Ask your friend:<br/>
-                            <strong>"Am I warmer or colder than my last position?"</strong>
+                            You've marked your start and end points.<br/>
+                            How far did you move?
+                        </p>
+                        <select 
+                            className="select-input"
+                            value={thermometerDistance}
+                            onChange={(e) => setThermometerDistance(e.target.value)}
+                        >
+                            {THERMOMETER_DISTANCES.map(d => (
+                                <option key={d} value={d}>{d}</option>
+                            ))}
+                        </select>
+                        <p style={{marginTop: '10px', fontSize: '13px', color: '#6b7280'}}>
+                            Then ask: <strong>"Are we closer or farther from you than when we started?"</strong>
                         </p>
                     </div>
                 )}
@@ -665,16 +765,29 @@ function QuestionModal({ type, onClose, onConfirm }) {
                 {type === 'photo' && (
                     <div>
                         <p style={{marginBottom: '15px', color: '#6b7280', fontSize: '14px'}}>
-                            Ask: "Send me a photo of [X]"
+                            Ask for a photo of:
                         </p>
-                        <input
-                            type="text"
-                            className="text-input"
-                            placeholder="e.g., Tallest building, Red door, Tram..."
-                            value={input}
-                            onChange={(e) => setInput(e.target.value)}
-                            autoFocus
-                        />
+                        <div style={{display: 'grid', gap: '8px', maxHeight: '300px', overflowY: 'auto'}}>
+                            {PHOTO_QUESTIONS.map(q => (
+                                <button
+                                    key={q}
+                                    onClick={() => setSelectedQuestion(q)}
+                                    style={{
+                                        padding: '12px',
+                                        background: selectedQuestion === q ? '#06b6d4' : '#f3f4f6',
+                                        color: selectedQuestion === q ? 'white' : '#374151',
+                                        border: selectedQuestion === q ? '2px solid #0891b2' : '2px solid #e5e7eb',
+                                        borderRadius: '8px',
+                                        cursor: 'pointer',
+                                        textAlign: 'left',
+                                        fontSize: '14px',
+                                        fontWeight: selectedQuestion === q ? 'bold' : 'normal'
+                                    }}
+                                >
+                                    📷 {q}
+                                </button>
+                            ))}
+                        </div>
                     </div>
                 )}
 
@@ -714,6 +827,10 @@ function AnswerModal({ question, onSubmit, onCancel }) {
         }
         onSubmit(answer);
     }
+
+    // Parse matching question to determine answer type
+    const isDirectional = question.type === 'matching' && 
+        (question.details.includes('north or south') || question.details.includes('east or west'));
 
     return (
         <div className="modal">
@@ -771,110 +888,127 @@ function AnswerModal({ question, onSubmit, onCancel }) {
                     </div>
                 )}
 
-                {/* Thermometer: Warmer/Colder */}
+                {/* Thermometer: Closer/Farther */}
                 {question.type === 'thermometer' && (
-                    <div style={{display: 'grid', gap: '10px'}}>
-                        <button
-                            onClick={() => setAnswer('Warmer')}
-                            style={{
-                                padding: '15px',
-                                background: answer === 'Warmer' ? '#ef4444' : '#f3f4f6',
-                                color: answer === 'Warmer' ? 'white' : '#374151',
-                                border: answer === 'Warmer' ? '3px solid #dc2626' : '2px solid #e5e7eb',
-                                borderRadius: '8px',
-                                cursor: 'pointer',
-                                fontWeight: 'bold',
-                                fontSize: '16px'
-                            }}
-                        >
-                            🔥 Warmer (getting closer)
-                        </button>
-                        <button
-                            onClick={() => setAnswer('Colder')}
-                            style={{
-                                padding: '15px',
-                                background: answer === 'Colder' ? '#3b82f6' : '#f3f4f6',
-                                color: answer === 'Colder' ? 'white' : '#374151',
-                                border: answer === 'Colder' ? '3px solid #2563eb' : '2px solid #e5e7eb',
-                                borderRadius: '8px',
-                                cursor: 'pointer',
-                                fontWeight: 'bold',
-                                fontSize: '16px'
-                            }}
-                        >
-                            ❄️ Colder (getting further)
-                        </button>
-                    </div>
-                )}
-
-                {/* Matching: Yes/No/Different */}
-                {question.type === 'matching' && (
-                    <div style={{display: 'grid', gap: '10px'}}>
-                        <button
-                            onClick={() => setAnswer('Same')}
-                            style={{
-                                padding: '15px',
-                                background: answer === 'Same' ? '#10b981' : '#f3f4f6',
-                                color: answer === 'Same' ? 'white' : '#374151',
-                                border: answer === 'Same' ? '3px solid #059669' : '2px solid #e5e7eb',
-                                borderRadius: '8px',
-                                cursor: 'pointer',
-                                fontWeight: 'bold',
-                                fontSize: '16px'
-                            }}
-                        >
-                            ✅ Same
-                        </button>
-                        <button
-                            onClick={() => setAnswer('Different')}
-                            style={{
-                                padding: '15px',
-                                background: answer === 'Different' ? '#ef4444' : '#f3f4f6',
-                                color: answer === 'Different' ? 'white' : '#374151',
-                                border: answer === 'Different' ? '3px solid #dc2626' : '2px solid #e5e7eb',
-                                borderRadius: '8px',
-                                cursor: 'pointer',
-                                fontWeight: 'bold',
-                                fontSize: '16px'
-                            }}
-                        >
-                            ❌ Different
-                        </button>
-                    </div>
-                )}
-
-                {/* Measuring: Closer/Further */}
-                {question.type === 'measuring' && (
                     <div style={{display: 'grid', gap: '10px'}}>
                         <button
                             onClick={() => setAnswer('Closer')}
                             style={{
                                 padding: '15px',
-                                background: answer === 'Closer' ? '#10b981' : '#f3f4f6',
+                                background: answer === 'Closer' ? '#ef4444' : '#f3f4f6',
                                 color: answer === 'Closer' ? 'white' : '#374151',
-                                border: answer === 'Closer' ? '3px solid #059669' : '2px solid #e5e7eb',
+                                border: answer === 'Closer' ? '3px solid #dc2626' : '2px solid #e5e7eb',
                                 borderRadius: '8px',
                                 cursor: 'pointer',
                                 fontWeight: 'bold',
                                 fontSize: '16px'
                             }}
                         >
-                            ✅ Yes, I'm closer
+                            🔥 Closer (getting warmer)
                         </button>
                         <button
-                            onClick={() => setAnswer('Further')}
+                            onClick={() => setAnswer('Farther')}
                             style={{
                                 padding: '15px',
-                                background: answer === 'Further' ? '#ef4444' : '#f3f4f6',
-                                color: answer === 'Further' ? 'white' : '#374151',
-                                border: answer === 'Further' ? '3px solid #dc2626' : '2px solid #e5e7eb',
+                                background: answer === 'Farther' ? '#3b82f6' : '#f3f4f6',
+                                color: answer === 'Farther' ? 'white' : '#374151',
+                                border: answer === 'Farther' ? '3px solid #2563eb' : '2px solid #e5e7eb',
                                 borderRadius: '8px',
                                 cursor: 'pointer',
                                 fontWeight: 'bold',
                                 fontSize: '16px'
                             }}
                         >
-                            ❌ No, I'm further
+                            ❄️ Farther (getting colder)
+                        </button>
+                    </div>
+                )}
+
+                {/* Matching: Directional (North/South, East/West) */}
+                {question.type === 'matching' && isDirectional && (
+                    <div style={{display: 'grid', gap: '10px'}}>
+                        {question.details.includes('north or south') ? (
+                            <>
+                                <button onClick={() => setAnswer('North')}
+                                    style={{
+                                        padding: '15px',
+                                        background: answer === 'North' ? '#3b82f6' : '#f3f4f6',
+                                        color: answer === 'North' ? 'white' : '#374151',
+                                        border: answer === 'North' ? '3px solid #2563eb' : '2px solid #e5e7eb',
+                                        borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px'
+                                    }}>
+                                    ⬆️ North
+                                </button>
+                                <button onClick={() => setAnswer('South')}
+                                    style={{
+                                        padding: '15px',
+                                        background: answer === 'South' ? '#3b82f6' : '#f3f4f6',
+                                        color: answer === 'South' ? 'white' : '#374151',
+                                        border: answer === 'South' ? '3px solid #2563eb' : '2px solid #e5e7eb',
+                                        borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px'
+                                    }}>
+                                    ⬇️ South
+                                </button>
+                            </>
+                        ) : (
+                            <>
+                                <button onClick={() => setAnswer('East')}
+                                    style={{
+                                        padding: '15px',
+                                        background: answer === 'East' ? '#3b82f6' : '#f3f4f6',
+                                        color: answer === 'East' ? 'white' : '#374151',
+                                        border: answer === 'East' ? '3px solid #2563eb' : '2px solid #e5e7eb',
+                                        borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px'
+                                    }}>
+                                    ➡️ East
+                                </button>
+                                <button onClick={() => setAnswer('West')}
+                                    style={{
+                                        padding: '15px',
+                                        background: answer === 'West' ? '#3b82f6' : '#f3f4f6',
+                                        color: answer === 'West' ? 'white' : '#374151',
+                                        border: answer === 'West' ? '3px solid #2563eb' : '2px solid #e5e7eb',
+                                        borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px'
+                                    }}>
+                                    ⬅️ West
+                                </button>
+                            </>
+                        )}
+                    </div>
+                )}
+
+                {/* Matching: Yes/No */}
+                {question.type === 'matching' && !isDirectional && (
+                    <div style={{display: 'grid', gap: '10px'}}>
+                        <button
+                            onClick={() => setAnswer('Yes')}
+                            style={{
+                                padding: '15px',
+                                background: answer === 'Yes' ? '#10b981' : '#f3f4f6',
+                                color: answer === 'Yes' ? 'white' : '#374151',
+                                border: answer === 'Yes' ? '3px solid #059669' : '2px solid #e5e7eb',
+                                borderRadius: '8px',
+                                cursor: 'pointer',
+                                fontWeight: 'bold',
+                                fontSize: '16px'
+                            }}
+                        >
+                            ✅ Yes
+                        </button>
+                        <button
+                            onClick={() => setAnswer('No')}
+                            style={{
+                                padding: '15px',
+                                background: answer === 'No' ? '#ef4444' : '#f3f4f6',
+                                color: answer === 'No' ? 'white' : '#374151',
+                                border: answer === 'No' ? '3px solid #dc2626' : '2px solid #e5e7eb',
+                                borderRadius: '8px',
+                                cursor: 'pointer',
+                                fontWeight: 'bold',
+                                fontSize: '16px'
+                            }}
+                        >
+                            ❌ No
                         </button>
                     </div>
                 )}
@@ -928,6 +1062,9 @@ style.textContent = `
     @keyframes pulse {
         0%, 100% { transform: scale(1); }
         50% { transform: scale(1.1); }
+    }
+    .pulse-marker {
+        animation: pulse 1.5s ease-in-out infinite;
     }
 `;
 document.head.appendChild(style);
