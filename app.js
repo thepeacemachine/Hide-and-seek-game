@@ -21,6 +21,8 @@ function App() {
     const [playerCount, setPlayerCount] = useState(4);
     const [role, setRole] = useState(''); // hider or seeker
     const [team, setTeam] = useState(1); // For 5-player games
+    const [gameCode, setGameCode] = useState('');
+    const [joinMode, setJoinMode] = useState(false); // true = joining existing game
     
     // Location tracking
     const [myLocation, setMyLocation] = useState(null);
@@ -40,7 +42,7 @@ function App() {
     const [hiderHand, setHiderHand] = useState([]);
     
     // Timers
-    const [hidingTimeLeft, setHidingTimeLeft] = useState(60 * 60); // 1 hour in seconds
+    const [hidingTimeLeft, setHidingTimeLeft] = useState(5); // 5 seconds for testing (change to 60 * 60 for real game)
     const [huntingTime, setHuntingTime] = useState(0);
     
     // UI state
@@ -53,6 +55,38 @@ function App() {
     const mapInstanceRef = useRef(null);
     const markerRef = useRef(null);
     const watchIdRef = useRef(null);
+
+    // Sync game state to localStorage
+    useEffect(() => {
+        if (gameCode && gameState !== 'setup') {
+            const gameData = {
+                gameState,
+                hidingTimeLeft,
+                huntingTime,
+                timestamp: Date.now()
+            };
+            localStorage.setItem(`jetlag_game_${gameCode}`, JSON.stringify(gameData));
+        }
+    }, [gameState, hidingTimeLeft, huntingTime, gameCode]);
+
+    // Poll for game state updates from other players
+    useEffect(() => {
+        if (gameCode && gameState !== 'setup') {
+            const interval = setInterval(() => {
+                const stored = localStorage.getItem(`jetlag_game_${gameCode}`);
+                if (stored) {
+                    const gameData = JSON.parse(stored);
+                    // Only update if timestamp is recent (within 10 seconds)
+                    if (Date.now() - gameData.timestamp < 10000) {
+                        if (gameData.gameState !== gameState) {
+                            setGameState(gameData.gameState);
+                        }
+                    }
+                }
+            }, 2000); // Check every 2 seconds
+            return () => clearInterval(interval);
+        }
+    }, [gameCode, gameState]);
 
     // Initialize map when game starts
     useEffect(() => {
@@ -172,6 +206,13 @@ function App() {
             alert('Please select your role!');
             return;
         }
+        
+        // Generate or use existing game code
+        if (!gameCode) {
+            const newCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+            setGameCode(newCode);
+        }
+        
         setGameState('hiding');
     }
 
@@ -255,6 +296,60 @@ function App() {
                 <div className="content">
                     <h2 style={{marginBottom: '15px'}}>Game Setup</h2>
                     
+                    {/* Game Code Section */}
+                    <div style={{background: '#f0f9ff', padding: '15px', borderRadius: '10px', marginBottom: '20px'}}>
+                        <div style={{display: 'flex', gap: '10px', marginBottom: '10px'}}>
+                            <button 
+                                className={`button ${!joinMode ? 'button-primary' : 'button-secondary'}`}
+                                onClick={() => setJoinMode(false)}
+                                style={{flex: 1, padding: '10px'}}
+                            >
+                                Create Game
+                            </button>
+                            <button 
+                                className={`button ${joinMode ? 'button-primary' : 'button-secondary'}`}
+                                onClick={() => setJoinMode(true)}
+                                style={{flex: 1, padding: '10px'}}
+                            >
+                                Join Game
+                            </button>
+                        </div>
+                        
+                        {joinMode ? (
+                            <>
+                                <label style={{display: 'block', marginBottom: '5px', fontWeight: 600}}>Enter Game Code</label>
+                                <input
+                                    type="text"
+                                    className="text-input"
+                                    placeholder="e.g., ABC123"
+                                    value={gameCode}
+                                    onChange={(e) => setGameCode(e.target.value.toUpperCase())}
+                                    style={{textTransform: 'uppercase'}}
+                                />
+                                <p style={{fontSize: '12px', color: '#6b7280', marginTop: '5px'}}>
+                                    Enter the code from the game creator
+                                </p>
+                            </>
+                        ) : (
+                            <div style={{textAlign: 'center', padding: '10px'}}>
+                                <p style={{fontSize: '14px', color: '#6b7280', marginBottom: '5px'}}>
+                                    {gameCode ? 'Your game code:' : 'A game code will be generated when you start'}
+                                </p>
+                                {gameCode && (
+                                    <div style={{
+                                        fontSize: '32px', 
+                                        fontWeight: 'bold', 
+                                        color: '#667eea',
+                                        letterSpacing: '5px',
+                                        fontFamily: 'monospace'
+                                    }}>
+                                        {gameCode}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                    
                     <label style={{display: 'block', marginBottom: '5px', fontWeight: 600}}>Number of Players</label>
                     <select 
                         className="select-input"
@@ -319,6 +414,20 @@ function App() {
             <div className="header">
                 <h1>🎮 Jet Lag: Nottingham</h1>
                 <p>{role === 'hider' ? '🎯 Hider' : '🔍 Seeker'} {playerCount === 5 && role === 'seeker' ? `- Team ${team}` : ''}</p>
+                {gameCode && (
+                    <div style={{
+                        marginTop: '8px',
+                        padding: '5px 15px',
+                        background: 'rgba(255,255,255,0.2)',
+                        borderRadius: '20px',
+                        display: 'inline-block',
+                        fontSize: '14px',
+                        fontWeight: 'bold',
+                        letterSpacing: '2px'
+                    }}>
+                        Game: {gameCode}
+                    </div>
+                )}
             </div>
 
             <div className="content">
