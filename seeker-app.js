@@ -1,8 +1,9 @@
 const { useState, useEffect, useRef } = React;
 
+// Card types and their configurations
 const CARD_CONFIG = {
     matching: { 
-        count: 6, 
+        count: 5, 
         color: '#2c3e50', 
         label: 'MATCHING', 
         subtitle: 'DRAW 3, PICK 1',
@@ -10,8 +11,7 @@ const CARD_CONFIG = {
         questions: [
             'Are you north or south of us?',
             'Are you east or west of us?',
-            'Are you in the same neighborhood / district as us?',
-            'Are you in the same ZIP code / ward as us?',
+            'Are you in the same civil parish as us?',
             'Are you on the same street as us?',
             'Are you at the same pub as us?'
         ]
@@ -53,7 +53,12 @@ const CARD_CONFIG = {
 };
 
 const NOTTINGHAM_CENTER = [52.9548, -1.1581];
+const ENGLAND_BOUNDS = [
+    [49.9, -6.4],
+    [55.8, 1.8]
+];
 
+// Convert distance string to meters
 function distanceToMeters(distStr) {
     if (distStr.includes('mi')) {
         const num = parseFloat(distStr.replace('½', '0.5').replace('¼', '0.25'));
@@ -69,6 +74,23 @@ function distanceToMeters(distStr) {
     return 1609.34;
 }
 
+// Calculate if point is within radius
+function isWithinRadius(point1, point2, radiusMeters) {
+    const R = 6371000; // Earth radius in meters
+    const lat1 = point1.lat * Math.PI / 180;
+    const lat2 = point2.lat * Math.PI / 180;
+    const deltaLat = (point2.lat - point1.lat) * Math.PI / 180;
+    const deltaLng = (point2.lng - point1.lng) * Math.PI / 180;
+    
+    const a = Math.sin(deltaLat/2) * Math.sin(deltaLat/2) +
+              Math.cos(lat1) * Math.cos(lat2) *
+              Math.sin(deltaLng/2) * Math.sin(deltaLng/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    const distance = R * c;
+    
+    return distance <= radiusMeters;
+}
+
 function App() {
     const [gameStarted, setGameStarted] = useState(false);
     const [usedQuestions, setUsedQuestions] = useState({
@@ -77,6 +99,8 @@ function App() {
         thermometer: [],
         photo: []
     });
+    const [myLocation, setMyLocation] = useState(null);
+    const [gpsAccuracy, setGpsAccuracy] = useState(null);
     
     const [showModal, setShowModal] = useState(false);
     const [modalContent, setModalContent] = useState(null);
@@ -88,9 +112,12 @@ function App() {
     
     const mapRef = useRef(null);
     const mapInstanceRef = useRef(null);
+    const myMarkerRef = useRef(null);
     const questionMarkersRef = useRef([]);
     const shadedAreasRef = useRef([]);
     const tempMarkerRef = useRef(null);
+    const watchIdRef = useRef(null);
+    const englandMaskRef = useRef(null);
 
     useEffect(() => {
         if (gameStarted && mapRef.current && !mapInstanceRef.current) {
@@ -100,14 +127,43 @@ function App() {
                 maxZoom: 19
             }).addTo(map);
             mapInstanceRef.current = map;
+            
+            // Add gray overlay outside England
+            addEnglandMask();
         }
     }, [gameStarted]);
+
+    function addEnglandMask() {
+        if (!mapInstanceRef.current) return;
+        
+        // Create very large outer rectangle
+        const worldBounds = [
+            [-90, -180], [90, -180], [90, 180], [-90, 180], [-90, -180]
+        ];
+        
+        // England bounds (approximate)
+        const englandBounds = [
+            [55.8, 1.8], [55.8, -6.4], [49.9, -6.4], [49.9, 1.8], [55.8, 1.8]
+        ].reverse(); // Reverse to create hole
+        
+        const mask = L.polygon([worldBounds, englandBounds], {
+            color: 'transparent',
+            fillColor: '#95a5a6',
+            fillOpacity: 0.6,
+            weight: 0,
+            interactive: false
+        }).addTo(mapInstanceRef.current);
+        
+        englandMaskRef.current = mask;
+    }
 
     useEffect(() => {
         if (!mapInstanceRef.current) return;
         
+        // Remove old click handler
         mapInstanceRef.current.off('click');
         
+        // Add new click handler if question type is active
         if (activeQuestionType && selectedQuestionDetails) {
             mapInstanceRef.current.on('click', (e) => {
                 handleMapClick(e.latlng);
@@ -115,28 +171,88 @@ function App() {
         }
     }, [activeQuestionType, selectedQuestionDetails, thermometerStartPoint]);
 
+    useEffect(() => {
+        if (gameStarted && 'geolocation' in navigator) {
+            watchIdRef.current = navigator.geolocation.watchPosition(
+                (position) => {
+                    const newLocation = {
+                        lat: position.coords.latitude,
+                        lng: position.coords.longitude
+                    };
+                    setMyLocation(newLocation);
+                    setGpsAccuracy(Math.round(position.coords.accuracy));
+                    updateMyMarker(newLocation);
+                },
+                (error) => console.error('GPS error:', error),
+                {
+                    enableHighAccuracy: true,
+                    maximumAge: 5000,
+                    timeout: 10000
+                }
+            );
+
+            return () => {
+                if (watchIdRef.current) {
+                    navigator.geolocation.clearWatch(watchIdRef.current);
+                }
+            };
+        }
+    }, [gameStarted]);
+
+    function updateMyMarker(location) {
+        if (!mapInstanceRef.current) return;
+        
+        if (myMarkerRef.current) {
+            myMarkerRef.current.setLatLng([location.lat, location.lng]);
+        } else {
+            const icon = L.divIcon({
+                className: 'custom-marker',
+                html: `<div style="background: #3b82f6; width: 20px; height: 20px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);"></div>`,
+                iconSize: [20, 20]
+            });
+            myMarkerRef.current = L.marker([location.lat, location.lng], { icon }).addTo(mapInstanceRef.current);
+            myMarkerRef.current.bindPopup('Your current location');
+        }
+    }
+
     function handleMapClick(latlng) {
         if (!activeQuestionType || !selectedQuestionDetails) return;
         
+        // For Radar: auto-calculate if within radius
         if (activeQuestionType === 'radar') {
-            setSelectedMapPoint({ lat: latlng.lat, lng: latlng.lng });
-            
-            if (tempMarkerRef.current) {
-                tempMarkerRef.current.remove();
+            if (!myLocation) {
+                alert('Waiting for GPS location...');
+                return;
             }
             
-            const icon = L.divIcon({
-                className: 'custom-marker pulse-marker',
-                html: `<div style="background: ${CARD_CONFIG.radar.color}; width: 35px; height: 35px; border-radius: 50%; border: 4px solid white; box-shadow: 0 4px 8px rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; font-size: 20px;">${CARD_CONFIG.radar.icon}</div>`,
-                iconSize: [35, 35]
-            });
-            tempMarkerRef.current = L.marker([latlng.lat, latlng.lng], { icon }).addTo(mapInstanceRef.current);
+            const clickedPoint = { lat: latlng.lat, lng: latlng.lng };
+            const distance = distanceToMeters(selectedQuestionDetails);
+            const within = isWithinRadius(myLocation, clickedPoint, distance);
             
-            setShowModal(true);
-            setModalContent({ type: 'radar', action: 'answer' });
+            // Auto-submit the answer
+            const question = {
+                type: 'radar',
+                details: selectedQuestionDetails,
+                location: clickedPoint,
+                timestamp: Date.now(),
+                timeUsed: new Date().toLocaleTimeString(),
+                answered: true,
+                answer: within ? 'Yes' : 'No'
+            };
+            
+            setUsedQuestions(prev => ({
+                ...prev,
+                radar: [...prev.radar, question]
+            }));
+            
+            addQuestionMarker(question);
+            addShadedArea(question);
+            
+            cancelSelection();
             return;
         }
         
+        // For Thermometer: need two points
         if (activeQuestionType === 'thermometer') {
             if (!thermometerStartPoint) {
                 setThermometerStartPoint({ lat: latlng.lat, lng: latlng.lng });
@@ -159,6 +275,7 @@ function App() {
                 setModalContent({ type: 'thermometer', action: 'answer' });
             }
         } else {
+            // For Matching: single click then ask
             setSelectedMapPoint({ lat: latlng.lat, lng: latlng.lng });
             
             if (tempMarkerRef.current) {
@@ -181,6 +298,7 @@ function App() {
         const alreadyUsed = usedQuestions[type].some(q => q.details === specificQuestion);
         if (alreadyUsed) return;
         
+        // For photo questions, immediately show them
         if (type === 'photo') {
             setActiveQuestionType('photo');
             setShowModal(true);
@@ -188,6 +306,7 @@ function App() {
             return;
         }
         
+        // Set as active question
         setActiveQuestionType(type);
         setSelectedQuestionDetails(specificQuestion);
         setSelectedMapPoint(null);
@@ -196,7 +315,7 @@ function App() {
         if (type === 'thermometer') {
             alert(`🌡️ Thermometer (${specificQuestion}):\n1. Click your STARTING point\n2. Click where you MOVED to\n3. Answer: Are you closer or farther?`);
         } else if (type === 'radar') {
-            alert(`🎯 Radar (${specificQuestion}):\nClick on the map to place this radar question.\nThen answer Yes/No based on your friend's response.`);
+            alert(`🎯 Radar (${specificQuestion}):\nClick on the map.\nI'll auto-calculate if it's within range from your GPS location!`);
         } else {
             alert(`📍 Click on the map where you want to ask:\n"${specificQuestion}"`);
         }
@@ -235,7 +354,7 @@ function App() {
     }
 
     function submitAnswer(answer) {
-        if (!selectedMapPoint) {
+        if (!selectedMapPoint && activeQuestionType !== 'radar') {
             alert('Error: No location selected');
             return;
         }
@@ -299,78 +418,114 @@ function App() {
         
         const { type, location, answer, details, startLocation } = question;
         
-        // RADAR - Much larger shading areas
+        const stripedPattern = 'repeating-linear-gradient(45deg, rgba(149, 165, 166, 0.6), rgba(149, 165, 166, 0.6) 10px, rgba(149, 165, 166, 0.4) 10px, rgba(149, 165, 166, 0.4) 20px)';
+        
+        // Radar shading - striped gray circles
         if (type === 'radar') {
             const distance = distanceToMeters(details);
             
-            if (answer === 'No') {
-                // Shade inside circle - NO POPUP
-                const circle = L.circle([location.lat, location.lng], {
-                    radius: distance,
-                    color: '#7f8c8d',
-                    fillColor: '#95a5a6',
-                    fillOpacity: 0.5,
-                    weight: 2,
-                    className: 'striped-area',
-                    interactive: false  // Prevents blocking clicks
-                }).addTo(mapInstanceRef.current);
-                shadedAreasRef.current.push(circle);
-            } else {
-                // Shade HUGE area outside circle
-                const outerRadius = 500000; // 500km - covers all of England
-                const innerRadius = distance;
+            const canvas = document.createElement('canvas');
+            canvas.width = 40;
+            canvas.height = 40;
+            const ctx = canvas.getContext('2d');
+            
+            // Create diagonal stripes
+            ctx.fillStyle = '#95a5a6';
+            ctx.globalAlpha = 0.6;
+            for (let i = -40; i < 80; i += 10) {
+                ctx.fillRect(i, 0, 5, 40);
+                ctx.save();
+                ctx.translate(20, 20);
+                ctx.rotate(45 * Math.PI / 180);
+                ctx.translate(-20, -20);
+                ctx.fillRect(i, 0, 5, 40);
+                ctx.restore();
+            }
+            
+            const pattern = ctx.createPattern(canvas, 'repeat');
+            
+            if (answer === 'No' || answer === 'Yes') {
+                // Create SVG pattern for stripes
+                const svgPattern = `
+                    <svg width="100%" height="100%">
+                        <defs>
+                            <pattern id="stripe-${Date.now()}" patternUnits="userSpaceOnUse" width="20" height="20" patternTransform="rotate(45)">
+                                <rect width="10" height="20" fill="rgba(149, 165, 166, 0.6)"/>
+                            </pattern>
+                        </defs>
+                    </svg>
+                `;
                 
-                const outerCirclePoints = [];
-                const innerCirclePoints = [];
-                const numPoints = 64;
-                
-                for (let i = 0; i <= numPoints; i++) {
-                    const angle = (i * 360) / numPoints;
-                    const rad = (angle * Math.PI) / 180;
+                if (answer === 'No') {
+                    // Shade inside circle
+                    const circle = L.circle([location.lat, location.lng], {
+                        radius: distance,
+                        color: '#7f8c8d',
+                        fillColor: '#95a5a6',
+                        fillOpacity: 0.5,
+                        weight: 2,
+                        className: 'striped-area'
+                    }).addTo(mapInstanceRef.current);
+                    circle.bindPopup(`❌ NOT within ${details}`);
+                    shadedAreasRef.current.push(circle);
+                } else {
+                    // Shade outside circle (donut)
+                    const outerRadius = 50000;
+                    const innerRadius = distance;
                     
-                    const outerLat = location.lat + (outerRadius / 111000) * Math.cos(rad);
-                    const outerLng = location.lng + (outerRadius / (111000 * Math.cos(location.lat * Math.PI / 180))) * Math.sin(rad);
-                    outerCirclePoints.push([outerLat, outerLng]);
+                    const outerCirclePoints = [];
+                    const innerCirclePoints = [];
+                    const numPoints = 64;
                     
-                    const innerLat = location.lat + (innerRadius / 111000) * Math.cos(rad);
-                    const innerLng = location.lng + (innerRadius / (111000 * Math.cos(location.lat * Math.PI / 180))) * Math.sin(rad);
-                    innerCirclePoints.unshift([innerLat, innerLng]);
+                    for (let i = 0; i <= numPoints; i++) {
+                        const angle = (i * 360) / numPoints;
+                        const rad = (angle * Math.PI) / 180;
+                        
+                        const outerLat = location.lat + (outerRadius / 111000) * Math.cos(rad);
+                        const outerLng = location.lng + (outerRadius / (111000 * Math.cos(location.lat * Math.PI / 180))) * Math.sin(rad);
+                        outerCirclePoints.push([outerLat, outerLng]);
+                        
+                        const innerLat = location.lat + (innerRadius / 111000) * Math.cos(rad);
+                        const innerLng = location.lng + (innerRadius / (111000 * Math.cos(location.lat * Math.PI / 180))) * Math.sin(rad);
+                        innerCirclePoints.unshift([innerLat, innerLng]);
+                    }
+                    
+                    const polygon = L.polygon([outerCirclePoints, innerCirclePoints], {
+                        color: '#7f8c8d',
+                        fillColor: '#95a5a6',
+                        fillOpacity: 0.5,
+                        weight: 2,
+                        className: 'striped-area'
+                    }).addTo(mapInstanceRef.current);
+                    polygon.bindPopup(`❌ NOT beyond ${details}`);
+                    shadedAreasRef.current.push(polygon);
+                    
+                    // Boundary circle
+                    const boundaryCircle = L.circle([location.lat, location.lng], {
+                        radius: distance,
+                        color: '#7f8c8d',
+                        fillColor: 'transparent',
+                        fillOpacity: 0,
+                        weight: 3
+                    }).addTo(mapInstanceRef.current);
+                    boundaryCircle.bindPopup(`Boundary: ${details}`);
+                    shadedAreasRef.current.push(boundaryCircle);
                 }
-                
-                const polygon = L.polygon([outerCirclePoints, innerCirclePoints], {
-                    color: '#7f8c8d',
-                    fillColor: '#95a5a6',
-                    fillOpacity: 0.5,
-                    weight: 2,
-                    className: 'striped-area',
-                    interactive: false  // Prevents blocking clicks
-                }).addTo(mapInstanceRef.current);
-                shadedAreasRef.current.push(polygon);
-                
-                // Boundary circle - NO POPUP
-                const boundaryCircle = L.circle([location.lat, location.lng], {
-                    radius: distance,
-                    color: '#7f8c8d',
-                    fillColor: 'transparent',
-                    fillOpacity: 0,
-                    weight: 3,
-                    interactive: false  // Prevents blocking clicks
-                }).addTo(mapInstanceRef.current);
-                shadedAreasRef.current.push(boundaryCircle);
             }
         }
         
-        // MATCHING - Much larger half-plane shading
+        // Matching shading - half-plane
         if (type === 'matching') {
             const isNorthSouth = details.includes('north or south');
             const isEastWest = details.includes('east or west');
             
             if (isNorthSouth || isEastWest) {
-                const largeDistance = 500000; // 500km - covers entire regions
+                const largeDistance = 50000;
                 let bounds = [];
                 
                 if (isNorthSouth) {
                     if (answer === 'North') {
+                        // Shade south
                         bounds = [
                             [location.lat - (largeDistance / 111000), location.lng - (largeDistance / (111000 * Math.cos(location.lat * Math.PI / 180)))],
                             [location.lat - (largeDistance / 111000), location.lng + (largeDistance / (111000 * Math.cos(location.lat * Math.PI / 180)))],
@@ -378,6 +533,7 @@ function App() {
                             [location.lat, location.lng - (largeDistance / (111000 * Math.cos(location.lat * Math.PI / 180)))]
                         ];
                     } else if (answer === 'South') {
+                        // Shade north
                         bounds = [
                             [location.lat, location.lng - (largeDistance / (111000 * Math.cos(location.lat * Math.PI / 180)))],
                             [location.lat, location.lng + (largeDistance / (111000 * Math.cos(location.lat * Math.PI / 180)))],
@@ -389,6 +545,7 @@ function App() {
                 
                 if (isEastWest) {
                     if (answer === 'East') {
+                        // Shade west
                         bounds = [
                             [location.lat - (largeDistance / 111000), location.lng - (largeDistance / (111000 * Math.cos(location.lat * Math.PI / 180)))],
                             [location.lat + (largeDistance / 111000), location.lng - (largeDistance / (111000 * Math.cos(location.lat * Math.PI / 180)))],
@@ -396,6 +553,7 @@ function App() {
                             [location.lat - (largeDistance / 111000), location.lng]
                         ];
                     } else if (answer === 'West') {
+                        // Shade east
                         bounds = [
                             [location.lat - (largeDistance / 111000), location.lng],
                             [location.lat + (largeDistance / 111000), location.lng],
@@ -411,58 +569,63 @@ function App() {
                         fillColor: '#95a5a6',
                         fillOpacity: 0.5,
                         weight: 2,
-                        className: 'striped-area',
-                        interactive: false  // Prevents blocking clicks
+                        className: 'striped-area'
                     }).addTo(mapInstanceRef.current);
+                    poly.bindPopup(`❌ NOT ${answer.toLowerCase()}`);
                     shadedAreasRef.current.push(poly);
                 }
                 
-                // Dividing line
-                const lineLen = 5; // Much longer line
+                // Draw dividing line
+                const lineLen = 0.5;
                 const linePoints = isNorthSouth 
                     ? [[location.lat, location.lng - lineLen], [location.lat, location.lng + lineLen]]
                     : [[location.lat - lineLen, location.lng], [location.lat + lineLen, location.lng]];
                 const line = L.polyline(linePoints, {
                     color: '#2c3e50',
-                    weight: 3,
-                    interactive: false
+                    weight: 3
                 }).addTo(mapInstanceRef.current);
                 shadedAreasRef.current.push(line);
             }
         }
         
-        // THERMOMETER - Much larger half-plane shading
+        // Thermometer shading - half-plane perpendicular to movement
         if (type === 'thermometer' && startLocation) {
+            // Calculate vector from start to end
             const dx = location.lng - startLocation.lng;
             const dy = location.lat - startLocation.lat;
             
+            // Midpoint
             const midLat = (startLocation.lat + location.lat) / 2;
             const midLng = (startLocation.lng + location.lng) / 2;
             
+            // Perpendicular vector (rotated 90 degrees)
             const perpDx = -dy;
             const perpDy = dx;
             
+            // Normalize
             const length = Math.sqrt(perpDx * perpDx + perpDy * perpDy);
             const normPerpDx = perpDx / length;
             const normPerpDy = perpDy / length;
             
-            // Much longer perpendicular line
-            const lineExtent = 5;
+            // Create perpendicular line extending far in both directions
+            const lineExtent = 0.5;
             const perpLine = L.polyline([
                 [midLat - normPerpDy * lineExtent, midLng - normPerpDx * lineExtent],
                 [midLat + normPerpDy * lineExtent, midLng + normPerpDx * lineExtent]
             ], {
                 color: '#f39c12',
-                weight: 4,
-                interactive: false
+                weight: 4
             }).addTo(mapInstanceRef.current);
+            perpLine.bindPopup('Dividing line');
             shadedAreasRef.current.push(perpLine);
             
-            // HUGE half-plane shading
-            const largeDistance = 500000; // 500km
+            // Shade half-plane
+            const largeDistance = 50000;
             let halfPlane = [];
             
             if (answer === 'Closer') {
+                // Shade the side AWAY from the hider (behind the end point)
+                // The hider is on the far side
                 halfPlane = [
                     [midLat - normPerpDy * lineExtent - normPerpDx * largeDistance, midLng - normPerpDx * lineExtent + normPerpDy * largeDistance],
                     [midLat + normPerpDy * lineExtent - normPerpDx * largeDistance, midLng + normPerpDx * lineExtent + normPerpDy * largeDistance],
@@ -470,6 +633,7 @@ function App() {
                     [midLat - normPerpDy * lineExtent, midLng - normPerpDx * lineExtent]
                 ];
             } else {
+                // Shade the side towards the hider (ahead of the end point)
                 halfPlane = [
                     [midLat - normPerpDy * lineExtent, midLng - normPerpDx * lineExtent],
                     [midLat + normPerpDy * lineExtent, midLng + normPerpDx * lineExtent],
@@ -483,20 +647,19 @@ function App() {
                 fillColor: '#95a5a6',
                 fillOpacity: 0.5,
                 weight: 2,
-                className: 'striped-area',
-                interactive: false  // Prevents blocking clicks
+                className: 'striped-area'
             }).addTo(mapInstanceRef.current);
+            poly.bindPopup(answer === 'Closer' ? '❌ NOT this side (farther)' : '❌ NOT this side (closer)');
             shadedAreasRef.current.push(poly);
             
-            // Movement line
+            // Draw movement line
             const line = L.polyline([
                 [startLocation.lat, startLocation.lng],
                 [location.lat, location.lng]
             ], {
                 color: '#f39c12',
                 weight: 3,
-                dashArray: '10, 10',
-                interactive: false
+                dashArray: '10, 10'
             }).addTo(mapInstanceRef.current);
             shadedAreasRef.current.push(line);
         }
@@ -517,9 +680,17 @@ function App() {
             questionMarkersRef.current = [];
             shadedAreasRef.current.forEach(area => area.remove());
             shadedAreasRef.current = [];
+            if (myMarkerRef.current) {
+                myMarkerRef.current.remove();
+                myMarkerRef.current = null;
+            }
             if (tempMarkerRef.current) {
                 tempMarkerRef.current.remove();
                 tempMarkerRef.current = null;
+            }
+            if (englandMaskRef.current) {
+                englandMaskRef.current.remove();
+                englandMaskRef.current = null;
             }
             if (mapInstanceRef.current) {
                 mapInstanceRef.current.remove();
@@ -579,6 +750,13 @@ function App() {
                     <div id="map" ref={mapRef}></div>
                 </div>
 
+                {myLocation && (
+                    <div className="gps-status">
+                        <span>📍 GPS Active</span>
+                        <span className="gps-accuracy">±{gpsAccuracy}m</span>
+                    </div>
+                )}
+
                 <div style={{marginTop: '20px'}}>
                     {Object.entries(CARD_CONFIG).map(([type, config]) => (
                         <QuestionCard
@@ -601,7 +779,7 @@ function App() {
                             <>📍 Now click where you MOVED to</>
                         )}
                         {activeQuestionType === 'radar' && (
-                            <>🎯 Click on the map to place: {selectedQuestionDetails}</>
+                            <>🎯 Click on the map - I'll auto-check if within {selectedQuestionDetails}</>
                         )}
                         {activeQuestionType === 'matching' && (
                             <>📍 Click the map to ask: "{selectedQuestionDetails}"</>
@@ -670,6 +848,7 @@ function App() {
     );
 }
 
+// Question Card Component
 function QuestionCard({ type, config, usedQuestions, activeQuestion, onSelectQuestion }) {
     const remainingCount = config.count - usedQuestions.length;
     
@@ -852,25 +1031,6 @@ function AnswerModal({ question, onSubmit, onCancel }) {
                 </div>
 
                 <div style={{display: 'grid', gap: '10px'}}>
-                    {question.type === 'radar' && (
-                        <>
-                            <button onClick={() => setAnswer('Yes')} style={{
-                                padding: '15px', fontWeight: 'bold', fontSize: '16px', borderRadius: '8px',
-                                background: answer === 'Yes' ? '#10b981' : '#f3f4f6',
-                                color: answer === 'Yes' ? 'white' : '#374151',
-                                border: '3px solid ' + (answer === 'Yes' ? '#059669' : '#e5e7eb'),
-                                cursor: 'pointer'
-                            }}>✅ Yes, within {question.details}</button>
-                            <button onClick={() => setAnswer('No')} style={{
-                                padding: '15px', fontWeight: 'bold', fontSize: '16px', borderRadius: '8px',
-                                background: answer === 'No' ? '#ef4444' : '#f3f4f6',
-                                color: answer === 'No' ? 'white' : '#374151',
-                                border: '3px solid ' + (answer === 'No' ? '#dc2626' : '#e5e7eb'),
-                                cursor: 'pointer'
-                            }}>❌ No, NOT within {question.details}</button>
-                        </>
-                    )}
-
                     {question.type === 'thermometer' && (
                         <>
                             <button onClick={() => setAnswer('Closer')} style={{
